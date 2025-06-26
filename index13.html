@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Three.js Tile Move to Center</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; }
+    canvas { display: block; }
+
+    #drawingCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 90;
+      pointer-events: none;
+    }
+
+    #infoBox {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      color: #000;
+      padding: 20px 24px 16px;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      width: 320px;
+      text-align: left;
+      display: none;
+      z-index: 40;
+      box-shadow: 0 0 0 1px #ccc;
+      border-radius: 0;
+    }
+    #infoBox strong {
+      display: block;
+      font-size: 18px;
+      margin-bottom: 4px;
+      font-weight: normal;
+    }
+    #infoBox em {
+      display: block;
+      font-size: 12px;
+      color: #666;
+      font-style: normal;
+      margin-top: 8px;
+    }
+
+    .icon-in-box {
+      position: absolute;
+      top: 9px;
+      left: 9px;
+      width: 15px;
+      height: 15px;
+      background: url('images/1.png') no-repeat center center;
+      background-size: contain;
+    }
+
+    #arenaButton {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      width: 30px;
+      height: 30px;
+      background: url('images/2.png') no-repeat center center;
+      background-size: contain;
+      z-index: 100;
+      cursor: pointer;
+    }
+
+    #qrPopup {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 99;
+      display: none;
+      /* background: white; */
+   
+      /* box-shadow: 0 0 0 1px #ccc; */
+    }
+    #qrPopup img {
+      width: 200px;
+      height: 200px;
+    }
+
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 50;
+      transform: rotate(45deg);
+    }
+    .control-dot {
+      width: 8px;
+      height: 8px;
+      background-color: white;
+      border-radius: 50%;
+      border: 0px solid #aaa;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    .control-dot:hover {
+      background-color: #ccc;
+    }
+  </style>
+</head>
+<body>
+<div id="arenaButton" onclick="toggleQR()"></div>
+<div id="qrPopup"><img src="images/3.png" alt="Join Are.na" /></div>
+<div id="infoBox">
+  <div class="icon-in-box"></div>
+  <div id="infoContent"></div>
+</div>
+<div id="controls">
+  <div class="control-dot" onclick="cycleVisibility('outer')"></div>
+  <div class="control-dot" onclick="cycleVisibility('inner')"></div>
+  <div class="control-dot" onclick="cycleVisibility('strip')"></div>
+</div>
+<canvas id="drawingCanvas"></canvas>
+
+<div style="position: absolute; top: 20px; right: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px;">
+  <div class="control-dot" onclick="toggleDrawing()"></div>
+  <div class="control-dot" onclick="clearDrawing()"></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.min.js"></script>
+<script>
+let scene, camera, renderer;
+let outerSphereGroup = new THREE.Group();
+let innerSphereGroup = new THREE.Group();
+let stripGroup = new THREE.Group();
+let outerTiles = [], innerTiles = [], stripTiles = [];
+let outerWireframe, innerWireframe;
+let outerState = 0, innerState = 0, stripState = 0;
+let selectedTile = null, movingToCenter = false;
+let originalPosition = null, originalQuaternion = null;
+let outerMeta = [], innerMeta = [], stripMeta = [];
+let tileSize = 0.6;
+let mouse = new THREE.Vector2();
+const raycaster = new THREE.Raycaster();
+const infoBox = document.getElementById('infoBox');
+
+function cycleVisibility(type) {
+  if (type === 'outer') {
+    outerState = (outerState + 1) % 3;
+    outerTiles.forEach(tile => tile.visible = outerState === 0);
+    if (outerWireframe) outerWireframe.visible = outerState === 1;
+  } else if (type === 'inner') {
+    innerState = (innerState + 1) % 3;
+    innerTiles.forEach(tile => tile.visible = innerState === 0);
+    if (innerWireframe) innerWireframe.visible = innerState === 1;
+  } else if (type === 'strip') {
+    stripState = (stripState + 1) % 3;
+    stripTiles.forEach(tile => tile.visible = stripState === 0);
+  }
+}
+
+init();
+animate();
+
+function init() {
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.z = 10;
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(outerSphereGroup);
+  scene.add(innerSphereGroup);
+  scene.add(stripGroup);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  window.addEventListener('click', onDocumentClick);
+
+  window.addEventListener('wheel', (event) => {
+    camera.position.z += event.deltaY * 0.01;
+    camera.position.z = Math.max(2, Math.min(100, camera.position.z));
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight') {
+      stripGroup.position.x -= 0.01;
+    } else if (e.key === 'ArrowLeft') {
+      stripGroup.position.x += 0.01;
+    } else if (e.key === 'ArrowUp') {
+      stripTiles.forEach(tile => tile.material.opacity = Math.max(0.05, tile.material.opacity - 0.05));
+    } else if (e.key === 'ArrowDown') {
+      stripTiles.forEach(tile => tile.material.opacity = Math.min(1, tile.material.opacity + 0.05));
+    }
+  });
+
+  const textureLoader = new THREE.TextureLoader();
+  loadSphere('https://api.are.na/v2/channels/atmosphere-15ctioljas?per=100', outerSphereGroup, outerTiles, outerMeta, 3, textureLoader, 1, false, true, 10, 10);
+// loadSphere('https://api.are.na/v2/channels/indagaciones-atmosfericas-medialab-matadero?per=100', outerSphereGroup, outerTiles, outerMeta, 3, textureLoader, 1, false, true, 10, 10);  
+
+
+
+loadSphere('https://api.are.na/v2/channels/weather-viz?per=100', innerSphereGroup, innerTiles, innerMeta, 1.2, textureLoader, 1, true, true, 64, 64);
+  loadStrip('https://api.are.na/v2/channels/models-hozys0dmom0?per=100', stripGroup, textureLoader);
+}
+
+function createSphereWireframe(radius, widthSegments, heightSegments) {
+  const geometry = new THREE.SphereGeometry(radius, widthSegments, heightSegments);
+  const wireframe = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({ color: 0x00ff00 }));
+  return wireframe;
+}
+
+  function loadStrip(url, group, textureLoader) {
+  fetch(url)
+    .then(res => res.json())
+    .then(data => {
+      const imageBlocks = data.contents.filter(b => b.image?.original?.url);
+      stripMeta = imageBlocks;
+      const tileWidth = tileSize * 2.2;
+      const tileHeight = tileSize * 2.2;
+      const spacing = tileWidth + 1.4;
+      const startX = -(imageBlocks.length - 1) * spacing / 2;
+      for (let i = 0; i < imageBlocks.length; i++) {
+        const tex = textureLoader.load(imageBlocks[i].image.large?.url || imageBlocks[i].image.original.url);
+        const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide });
+        const geo = new THREE.PlaneGeometry(tileWidth, tileHeight);
+        const edges = new THREE.EdgesGeometry(geo);
+        const outline = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0xffffff }));
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.add(outline);
+        mesh.userData.originalMap = tex;
+        mesh.position.set(startX + i * spacing, 0, 1.8);
+        group.add(mesh);
+        stripTiles.push(mesh);
+      }
+    });
+}
+
+function loadSphere(url, group, tileArray, metaArray, radius, textureLoader, opacity, isInner = false, addWire = false, widthSeg = 32, heightSeg = 32) {
+  fetch(url)
+    .then(res => res.json())
+    .then(async data => {
+      let blocks = data.contents;
+      const nested = await Promise.all(
+        blocks.filter(b => b.class === 'Channel').map(async ch => {
+          try {
+            const res = await fetch(`https://api.are.na/v2/channels/${ch.slug}?per=100`);
+            const subData = await res.json();
+            return subData.contents;
+          } catch {
+            return [];
+          }
+        })
+      );
+      metaArray.push(...blocks, ...nested.flat());
+      const images = metaArray.map(b => b.image?.original?.url).filter(Boolean);
+      initTiles(images, radius, group, textureLoader, tileArray, opacity, isInner);
+
+      if (addWire) {
+        const wire = createSphereWireframe(radius, widthSeg, heightSeg);
+        wire.visible = false;
+        scene.add(wire);
+        if (isInner) innerWireframe = wire;
+        else outerWireframe = wire;
+      }
+    });
+}
+function initTiles(images, radius, group, textureLoader, tileArray, opacity = 1, isInner = false) {
+  const sphereArea = 4 * Math.PI * Math.pow(radius, 2);
+  const areaPerTile = sphereArea / images.length;
+  const localTileSize = Math.sqrt(areaPerTile);
+  const lonCount = Math.floor((2 * Math.PI * radius) / localTileSize);
+  const latCount = Math.ceil(images.length / lonCount);
+
+  let index = 0;
+  for (let i = 0; i < latCount; i++) {
+    const theta = (i + 0.5) * Math.PI / latCount;
+    const tilesAtLat = Math.round(lonCount * Math.sin(theta));
+    for (let j = 0; j < tilesAtLat; j++) {
+      if (index >= images.length) break;
+      const phi = (j + 0.5) * 2 * Math.PI / tilesAtLat;
+      const x = radius * Math.sin(theta) * Math.cos(phi);
+      const y = radius * Math.cos(theta);
+      const z = radius * Math.sin(theta) * Math.sin(phi);
+
+      const geo = new THREE.PlaneGeometry(localTileSize, localTileSize);
+      const mat = new THREE.MeshBasicMaterial({ transparent: true, opacity, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x, y, z);
+      mesh.lookAt(0, 0, 0);
+      mesh.rotateY(Math.PI);
+
+      mesh.userData.index = index;
+      mesh.userData.isInner = isInner;
+
+      group.add(mesh);
+      tileArray.push(mesh);
+
+      textureLoader.load(images[index], (tex) => {
+        mat.map = tex;
+        mesh.userData.originalMap = tex;
+        mat.opacity = opacity;
+        mat.needsUpdate = true;
+      });
+
+      index++;
+    }
+  }
+}
+
+function onDocumentClick(event) {
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects([...outerTiles, ...innerTiles]);
+  if (intersects.length > 0) {
+    if (selectedTile) {
+      selectedTile.position.copy(originalPosition);
+      selectedTile.quaternion.copy(originalQuaternion);
+      selectedTile.scale.set(1, 1, 1);
+      selectedTile = null;
+      movingToCenter = false;
+      infoBox.style.display = 'none';
+      return;
+    }
+    selectedTile = intersects[0].object;
+    originalPosition = selectedTile.position.clone();
+    originalQuaternion = selectedTile.quaternion.clone();
+    movingToCenter = true;
+
+    const blockList = selectedTile.userData.isInner ? innerMeta : outerMeta;
+    const index = selectedTile.userData.index;
+    const block = blockList[index];
+    if (block) {
+      const title = block.title || '[Untitled]';
+      const description = block.description || '';
+      const user = block.user?.full_name || 'Unknown';
+      document.getElementById('infoContent').innerHTML = `<strong>${title}</strong><br>${description}<br><em>Added by ${user}</em>`;
+
+      infoBox.style.display = 'block';
+    }
+  } else if (selectedTile) {
+    selectedTile.position.copy(originalPosition);
+    selectedTile.quaternion.copy(originalQuaternion);
+    selectedTile.scale.set(1, 1, 1);
+    selectedTile = null;
+    movingToCenter = false;
+    infoBox.style.display = 'none';
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  outerSphereGroup.rotation.y += 0.003;
+  innerSphereGroup.rotation.x += 0.0025;
+
+  if (movingToCenter && selectedTile) {
+    const targetPos = new THREE.Vector3(0, 0, camera.position.z - 0.8);
+    const viewHeight = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * (camera.position.z - 0.8);
+    const targetScale = viewHeight / tileSize;
+    selectedTile.position.lerp(targetPos, 0.08);
+    selectedTile.quaternion.slerp(camera.quaternion, 0.08);
+    selectedTile.scale.lerp(new THREE.Vector3(targetScale, targetScale, 1), 0.08);
+    if (selectedTile.position.distanceTo(targetPos) < 0.01) {
+      movingToCenter = false;
+    }
+  }
+  renderer.render(scene, camera);
+}
+const drawCanvas = document.getElementById('drawingCanvas');
+const drawCtx = drawCanvas.getContext('2d');
+let drawing = false;
+let drawingEnabled = false;
+
+function resizeCanvas() {
+  drawCanvas.width = window.innerWidth;
+  drawCanvas.height = window.innerHeight;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+function toggleDrawing() {
+  drawingEnabled = !drawingEnabled;
+  drawCanvas.style.pointerEvents = drawingEnabled ? 'auto' : 'none';
+}
+
+function clearDrawing() {
+  drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+}
+
+drawCanvas.addEventListener('mousedown', (e) => {
+  if (!drawingEnabled) return;
+  drawing = true;
+  drawCtx.beginPath();
+  drawCtx.moveTo(e.clientX, e.clientY);
+});
+
+drawCanvas.addEventListener('mousemove', (e) => {
+  if (!drawing || !drawingEnabled) return;
+  drawCtx.lineTo(e.clientX, e.clientY);
+  drawCtx.strokeStyle = '#ff00ff'; // fuchsia color
+  drawCtx.lineWidth = 2;
+  drawCtx.stroke();
+});
+
+drawCanvas.addEventListener('mouseup', () => {
+  if (!drawingEnabled) return;
+  drawing = false;
+  drawCtx.closePath();
+});
+
+function toggleQR() {
+  const popup = document.getElementById('qrPopup');
+  popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
+}
+</script>
+</body>
+</html>
